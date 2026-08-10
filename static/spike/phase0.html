@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BrixelAI Phase 0 측정 스파이크</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 16px; max-width: 860px; }
+  h1 { font-size: 1.3em; } h2 { font-size: 1.05em; margin: 18px 0 6px; }
+  button { font-size: 15px; padding: 8px 14px; margin: 4px 6px 4px 0; cursor: pointer; }
+  button:disabled { opacity: .45; cursor: default; }
+  #cam { transform: none; border: 2px solid #888; border-radius: 6px; }
+  #overlay { position: absolute; left: 0; top: 0; pointer-events: none; }
+  #camwrap { position: relative; display: inline-block; }
+  #out { width: 100%; height: 320px; font: 12px/1.45 Consolas, monospace; white-space: pre; }
+  .runner { position: fixed; top: 6px; right: 8px; width: 22px; height: 22px; border-radius: 50%;
+            background: #e63; z-index: 9; }
+  .note { color: #666; font-size: 13px; }
+  .ok { color: #071; } .bad { color: #c22; }
+</style>
+</head>
+<body>
+<div class="runner" id="runner"></div>
+<h1>BrixelAI Phase 0 측정 스파이크 <span class="note">(2026-08-10 · worker-migration)</span></h1>
+<p class="note">위에서 아래로 버튼을 순서대로 누르고, 끝나면 맨 아래 로그 전체를 복사해서 보내 주세요.
+우상단 빨간 점은 메인 스레드가 살아 있으면 계속 움찔거립니다 — 멈추면 그 순간 메인이 막힌 것.</p>
+
+<h2>A. 코어 벤치 (카메라 불필요 · 자동 약 25초)</h2>
+<button id="btnA">A 실행 — 이 기기의 실효 병렬도</button>
+
+<h2>B. 카메라</h2>
+<button id="btnB">카메라 시작 (480×360 · 미러)</button>
+<div id="camwrap"><video id="cam" width="480" height="360" autoplay playsinline muted></video>
+<canvas id="overlay" width="480" height="360"></canvas></div>
+
+<h2>C. 워커 추론 — GPU vs CPU (0-e · U7 · U9)</h2>
+<button id="btnC" disabled>C 실행 — 손 모델 각 10회</button>
+
+<h2>D. 손 handedness / z 부호 (0-c) <span class="note">— 오른손 하나만 화면에, 손바닥이 카메라를 보게</span></h2>
+<button id="btnD" disabled>D-1 손바닥 샷</button>
+<button id="btnD2" disabled>D-2 손등 샷 (손을 뒤집고)</button>
+
+<h2>E. 포즈 visibility (0-b) <span class="note">— 상반신이 화면에 들어오게</span></h2>
+<button id="btnE" disabled>E 실행</button>
+
+<h2>F. 얼굴 keypoint 순서 (0-d) <span class="note">— 얼굴이 화면 중앙에</span></h2>
+<button id="btnF" disabled>F 실행 — 번호가 얼굴 위에 그려집니다</button>
+
+<h2>G. 합격선 예비 — 3태스크 동시 (U8·U9 · 각 10초)</h2>
+<button id="btnG3" disabled>G-1: 워커 3개 (태스크당 1개)</button>
+<button id="btnG1" disabled>G-2: 워커 1개 (3태스크 직렬)</button>
+
+<h2>결과 로그</h2>
+<button id="btnCopy">전체 복사</button>
+<textarea id="out" readonly></textarea>
+
+<script type="module">
+const out = document.getElementById('out');
+const log = s => { out.value += s + '\n'; out.scrollTop = out.scrollHeight; };
+const logObj = (tag, o) => log(`${tag} ${JSON.stringify(o)}`);
+document.getElementById('btnCopy').onclick = () => { out.select(); document.execCommand('copy'); };
+
+// 메인 생존 표시등 — rAF 로 움직인다. 멈춤 = 메인 블록.
+const runner = document.getElementById('runner');
+let t = 0;
+(function pulse () { t += 0.15; runner.style.transform = `translateY(${8 * Math.sin(t)}px)`;
+    requestAnimationFrame(pulse); })();
+
+// ── rAF 계측(모든 시험이 공유) ────────────────────────────────────────────────
+const rafSample = durMs => new Promise(res => {
+    const iv = [];
+    let last = performance.now();
+    const t0 = last;
+    (function tick () {
+        const now = performance.now();
+        iv.push(now - last); last = now;
+        if (now - t0 < durMs) requestAnimationFrame(tick);
+        else {
+            iv.sort((a, b) => a - b);
+            const p = q => +(iv[Math.min(iv.length - 1, Math.floor(iv.length * q))]).toFixed(1);
+            res({frames: iv.length, fps: +(iv.length / (durMs / 1000)).toFixed(1),
+                p50: p(0.5), p95: p(0.95), p99: p(0.99), max: +iv[iv.length - 1].toFixed(1)});
+        }
+    })();
+});
+
+log(`# BrixelAI Phase 0 — ${navigator.userAgent}`);
+log(`# hardwareConcurrency=${navigator.hardwareConcurrency} · deviceMemory=${navigator.deviceMemory || '?'}GB`);
+log('');
+
+// ── A. 코어 벤치 (0-a) ───────────────────────────────────────────────────────
+document.getElementById('btnA').onclick = async () => {
+    const btn = document.getElementById('btnA'); btn.disabled = true;
+    log('== A. 코어 벤치: 더미 워커 N개(각 30ms 스핀 @24Hz) vs 메인 rAF ==');
+    for (let n = 0; n <= 4; n++) {
+        const workers = [];
+        for (let i = 0; i < n; i++) {
+            const w = new Worker('./spin-worker.js');
+            w.postMessage({type: 'start', ms: 30, hz: 24});
+            workers.push(w);
+        }
+        await new Promise(r => setTimeout(r, 600));   // 정착 대기
+        const s = await rafSample(3000);
+        workers.forEach(w => w.terminate());
+        logObj(`A N=${n}`, s);
+        await new Promise(r => setTimeout(r, 300));
+    }
+    log('A 판독: p99 가 25ms 를 넘지 않는 최대 N = 실효 병렬도. N=0 은 대조군.');
+    log(''); btn.disabled = false;
+};
+
+// ── B. 카메라 ────────────────────────────────────────────────────────────────
+const cam = document.getElementById('cam');
+const overlay = document.getElementById('overlay');
+const octx = overlay.getContext('2d');
+const mir = document.createElement('canvas'); mir.width = 480; mir.height = 360;
+const mctx = mir.getContext('2d');
+/** 매니저 파이프라인과 같은 전제: 워커에는 "이미 미러된 프레임"만 보낸다(청사진 §4-5) */
+const grabBitmap = async () => {
+    mctx.setTransform(-1, 0, 0, 1, 480, 0);
+    mctx.drawImage(cam, 0, 0, 480, 360);
+    mctx.setTransform(1, 0, 0, 1, 0, 0);
+    const t0 = performance.now();
+    const bmp = await createImageBitmap(mir);
+    return {bmp, bitmapMs: +(performance.now() - t0).toFixed(2)};
+};
+document.getElementById('btnB').onclick = async () => {
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia(
+            {video: {width: 480, height: 360, facingMode: 'user'}});
+        cam.srcObject = stream;
+        // 미러 표시(교실 규약): 표시만 CSS 반전, 추론 프레임은 grabBitmap 이 뒤집는다
+        cam.style.transform = 'scaleX(-1)';
+        log('B: 카메라 시작됨 — 이후 버튼들이 활성화됩니다'); log('');
+        for (const id of ['btnC', 'btnD', 'btnD2', 'btnE', 'btnF', 'btnG3', 'btnG1'])
+            document.getElementById(id).disabled = false;
+    } catch (e) { log(`B 실패: ${e.name} ${e.message}`); }
+};
+
+// ── 워커 RPC ────────────────────────────────────────────────────────────────
+// ★wasm 경로는 절대 URL 이어야 한다 — FilesetResolver 는 상대 경로를 **번들 모듈 위치** 기준으로
+//   풀어서 './vendor/…' 를 주면 vendor/tasks-vision/vendor/tasks-vision/… 으로 이중이 된다(실행 검증에서 적발).
+const WASM = new URL('./vendor/tasks-vision/wasm', location.href).href;
+const MODELS = {
+    hand: './models/hand_landmarker.task',
+    pose: './models/pose_landmarker_lite.task',
+    faceMesh: './models/face_landmarker.task',
+    faceDet: './models/blaze_face_short_range.tflite'
+};
+const OPTS = {
+    hand: {numHands: 2, minHandDetectionConfidence: 0.5, minTrackingConfidence: 0.3},
+    pose: {numPoses: 1},
+    faceMesh: {numFaces: 1, outputFaceBlendshapes: false},
+    faceDet: {}
+};
+/** 정규화 랜드마크를 오버레이에 점으로. 추론 프레임=미러본, 표시 video=CSS 미러 → x 를 (1-x) 로 얹는다 */
+const drawLms = (groups, color) => {
+    octx.clearRect(0, 0, 480, 360);
+    octx.fillStyle = color;
+    for (const g of groups) for (const [x, y] of (g.lms || []))
+        { octx.beginPath(); octx.arc((1 - x) * 480, y * 360, 3, 0, 7); octx.fill(); }
+};
+/** 로그용 사본 — 그리기용 lms 좌표 뭉치는 로그를 어지럽히니 뺀다 */
+const noLms = d => JSON.parse(JSON.stringify(d, (k, v) => (k === 'lms' ? undefined : v)));
+/** 실행 중 재클릭 방지 — C 가 두 번 겹쳐 돈 실기 사례 대응 */
+const busyRun = async (btnIds, fn) => {
+    const btns = btnIds.map(id => document.getElementById(id));
+    btns.forEach(b => { b.disabled = true; });
+    try { await fn(); } finally { btns.forEach(b => { b.disabled = false; }); }
+};
+
+class WorkerRpc {
+    constructor () {
+        this.w = new Worker('./vision-worker.js');   // ★classic — 모듈 워커는 크롬 147에서 로더 파싱 실패(워커 파일 머리 주석)
+        this.seq = 0; this.pending = new Map();
+        this.w.onmessage = e => {
+            const m = e.data, p = this.pending.get(m.seq);
+            if (!p) return;
+            this.pending.delete(m.seq);
+            m.type === 'error' ? p.reject(new Error(m.message)) : p.resolve(m);
+        };
+        this.w.onerror = e => log(`워커 onerror: ${e.message}`);
+    }
+    call (msg, transfer) {
+        msg.seq = ++this.seq;
+        return new Promise((resolve, reject) => {
+            this.pending.set(msg.seq, {resolve, reject});
+            this.w.postMessage(msg, transfer || []);
+        });
+    }
+    terminate () { this.w.terminate(); }
+}
+const bootWorker = async () => {
+    const rpc = new WorkerRpc();
+    await rpc.call({type: 'init', wasmBase: WASM});
+    return rpc;
+};
+
+// ── C. GPU vs CPU (0-e) + 비트맵 비용(U7) ────────────────────────────────────
+document.getElementById('btnC').onclick = () => busyRun(['btnC'], async () => {
+    log('== C. 손 모델 — delegate 별 10회 (워커 안 순수 추론시간) ==');
+    for (const delegate of ['GPU', 'CPU']) {
+        const rpc = await bootWorker();
+        try {
+            const c = await rpc.call({type: 'create', taskId: 'h', kind: 'hand',
+                modelUrl: MODELS.hand, delegate, options: OPTS.hand});
+            const infer = [], bmpCost = [], round = [];
+            for (let i = 0; i < 10; i++) {
+                const {bmp, bitmapMs} = await grabBitmap();
+                bmpCost.push(bitmapMs);
+                const t0 = performance.now();
+                const r = await rpc.call({type: 'detect', taskId: 'h', bitmap: bmp}, [bmp]);
+                round.push(+(performance.now() - t0).toFixed(1));
+                infer.push(r.inferMs);
+                await new Promise(rs => setTimeout(rs, 40));
+            }
+            const med = a => a.slice().sort((x, y) => x - y)[Math.floor(a.length / 2)];
+            logObj(`C ${delegate}`, {initMs: c.initMs, warmMs: c.warmMs,
+                inferMed: med(infer), inferAll: infer,
+                roundTripMed: med(round), bitmapMsMed: med(bmpCost)});
+        } catch (e) { log(`C ${delegate} 실패: ${e.message}`); }
+        rpc.terminate();
+    }
+    log('C 판독: inferMed 가 작은 쪽이 이 기기의 delegate. roundTrip−infer ≈ 왕복 오버헤드.');
+    log('');
+});
+
+// ── D. handedness (0-c) ─────────────────────────────────────────────────────
+let dRpc = null;
+const handShot = async label => {
+    if (!dRpc) { dRpc = await bootWorker();
+        await dRpc.call({type: 'create', taskId: 'h', kind: 'hand',
+            modelUrl: MODELS.hand, delegate: 'CPU', options: OPTS.hand}); }
+    const {bmp} = await grabBitmap();
+    const r = await dRpc.call({type: 'detect', taskId: 'h', bitmap: bmp}, [bmp]);
+    drawLms(r.data.hands || [], '#e33');
+    (r.data.hands || []).forEach(h => { if (h.wrist) {
+        const x = (1 - h.wrist.x) * 480, y = h.wrist.y * 360;
+        octx.font = 'bold 15px sans-serif'; octx.fillStyle = '#fff';
+        octx.strokeStyle = '#000'; octx.lineWidth = 3;
+        octx.strokeText(h.label, x + 8, y); octx.fillText(h.label, x + 8, y); } });
+    logObj(`D ${label}`, noLms(r.data));
+};
+document.getElementById('btnD').onclick = () => handShot('손바닥(오른손만)').catch(e => log(`D 실패: ${e.message}`));
+document.getElementById('btnD2').onclick = () => handShot('손등(오른손만)').catch(e => log(`D 실패: ${e.message}`));
+
+// ── E. 포즈 visibility (0-b) ────────────────────────────────────────────────
+document.getElementById('btnE').onclick = async () => {
+    try {
+        const rpc = await bootWorker();
+        await rpc.call({type: 'create', taskId: 'p', kind: 'pose',
+            modelUrl: MODELS.pose, delegate: 'CPU', options: OPTS.pose});
+        const {bmp} = await grabBitmap();
+        const r = await rpc.call({type: 'detect', taskId: 'p', bitmap: bmp}, [bmp]);
+        drawLms(r.data.n ? [r.data] : [], '#26c');
+        logObj('E pose', noLms(r.data));
+        log('E 판독: visibilitySample 이 전부 0/undef 이면 포즈 이관 보류(청사진 5-3). 값이 다양하면 통과.');
+        log('');
+        rpc.terminate();
+    } catch (e) { log(`E 실패: ${e.message}`); }
+};
+
+// ── F. 얼굴 keypoint 순서 (0-d) ─────────────────────────────────────────────
+document.getElementById('btnF').onclick = async () => {
+    try {
+        const rpc = await bootWorker();
+        await rpc.call({type: 'create', taskId: 'f', kind: 'faceDet',
+            modelUrl: MODELS.faceDet, delegate: 'CPU', options: OPTS.faceDet});
+        const {bmp} = await grabBitmap();
+        const r = await rpc.call({type: 'detect', taskId: 'f', bitmap: bmp}, [bmp]);
+        logObj('F faceDet', r.data);
+        octx.clearRect(0, 0, 480, 360);
+        // 추론 프레임은 미러본 — 표시 video 도 CSS 미러라 정규화 x 를 (1-x) 로 화면에 얹는다
+        (r.data.keypoints || []).forEach((k, i) => {
+            const x = (1 - k.x) * 480, y = k.y * 360;
+            octx.fillStyle = '#0c4'; octx.beginPath(); octx.arc(x, y, 4, 0, 7); octx.fill();
+            octx.font = 'bold 16px sans-serif'; octx.fillStyle = '#fff';
+            octx.strokeStyle = '#000'; octx.lineWidth = 3;
+            octx.strokeText(String(i), x + 6, y - 6); octx.fillText(String(i), x + 6, y - 6);
+        });
+        log('F 판독: 화면 위 번호가 어느 부위에 붙었는지 적어 주세요.');
+        log('  (legacy 규약: 0=오른눈 1=왼눈 2=코 3=입 4=오른귀 5=왼귀 — "화면상" 기준)');
+        log('');
+        rpc.terminate();
+    } catch (e) { log(`F 실패: ${e.message}`); }
+};
+
+// ── G. 3태스크 동시 (U8·U9) ──────────────────────────────────────────────────
+const runTrio = async workerCount => {
+    log(`== G. 3태스크 동시 — 워커 ${workerCount}개 · 10초 · 요청 24Hz(in-flight 가드) ==`);
+    const kinds = ['hand', 'pose', 'faceMesh'];
+    const rpcs = [];
+    for (let i = 0; i < workerCount; i++) rpcs.push(await bootWorker());
+    const bind = kinds.map((k, i) => ({kind: k, rpc: rpcs[i % workerCount]}));
+    for (const b of bind)
+        await b.rpc.call({type: 'create', taskId: b.kind, kind: b.kind,
+            modelUrl: MODELS[b.kind], delegate: 'CPU', options: OPTS[b.kind]});
+    const stats = {}; kinds.forEach(k => { stats[k] = {n: 0, infer: []}; });
+    let stop = false;
+    const loops = bind.map(async b => {
+        while (!stop) {
+            const t0 = performance.now();
+            try {
+                const {bmp} = await grabBitmap();
+                const r = await b.rpc.call({type: 'detect', taskId: b.kind, bitmap: bmp}, [bmp]);
+                stats[b.kind].n++; stats[b.kind].infer.push(r.inferMs);
+            } catch (e) { log(`G ${b.kind} 오류: ${e.message}`); break; }
+            const wait = 1000 / 24 - (performance.now() - t0);
+            if (wait > 0) await new Promise(rs => setTimeout(rs, wait));
+        }
+    });
+    const raf = await rafSample(10000);
+    stop = true;
+    await Promise.all(loops);
+    const med = a => a.length ? a.slice().sort((x, y) => x - y)[Math.floor(a.length / 2)] : null;
+    logObj(`G rAF(메인)`, raf);
+    kinds.forEach(k => logObj(`G ${k}`, {perSec: +(stats[k].n / 10).toFixed(1), inferMed: med(stats[k].infer)}));
+    if (performance.memory) logObj('G memory', {usedMB: Math.round(performance.memory.usedJSHeapSize / 1048576)});
+    log('G 판독: 합격선 A안 = rAF fps≥30 & p99 낮음 & 각 태스크 12회/초 이상.');
+    log('');
+    rpcs.forEach(r => r.terminate());
+};
+document.getElementById('btnG3').onclick = () => busyRun(['btnG3', 'btnG1'],
+    () => runTrio(3)).catch(e => log(`G3 실패: ${e.message}`));
+document.getElementById('btnG1').onclick = () => busyRun(['btnG3', 'btnG1'],
+    () => runTrio(1)).catch(e => log(`G1 실패: ${e.message}`));
+</script>
+</body>
+</html>

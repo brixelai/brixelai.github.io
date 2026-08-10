@@ -1,0 +1,1 @@
+"use strict";let timer=null;onmessage=e=>{const t=e.data||{};if("start"===t.type){const e=t.ms||30,r=1e3/(t.hz||24);timer&&clearInterval(timer),timer=setInterval(()=>{const t=performance.now()+e;for(;performance.now()<t;);},r),postMessage({type:"started"})}else"stop"===t.type&&(timer&&clearInterval(timer),timer=null,postMessage({type:"stopped"}))};
