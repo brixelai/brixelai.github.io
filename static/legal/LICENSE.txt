@@ -1,0 +1,32 @@
+Brixel AI Editor
+Copyright (c) 2025-2026 Brixel. All rights reserved.
+
+PROPRIETARY SOFTWARE — NOT OPEN SOURCE
+
+This software, including its extensions, services, tools, documentation, translations
+and media created by Brixel ("Brixel Code"), is the confidential and proprietary
+property of Brixel. No part of the Brixel Code may be copied, modified, merged,
+published, distributed, sublicensed, sold, reverse engineered, or used to create
+derivative works, in whole or in part, without the prior written permission of Brixel.
+Use of the hosted service is governed by Brixel's separate terms of service.
+
+THIRD-PARTY COMPONENTS
+
+This software contains components that are NOT Brixel Code and are licensed to you
+under their own terms, which take precedence for those components:
+
+  * Portions derived from the Scratch 3.0 editor (scratch-vm, scratch-gui, scratch-render,
+    scratch-svg-renderer, scratch-storage, scratch-l10n, scratch-paint, scratch-audio,
+    scratch-parser, scratch-sb1-converter), taken from releases published under the
+    BSD 3-Clause License before 2024-11-25.
+    Copyright (c) 2016, Massachusetts Institute of Technology. All rights reserved.
+    See each package's LICENSE file and THIRD_PARTY_NOTICES.md.
+  * scratch-blocks (Apache License 2.0) and other libraries, fonts, models and media
+    listed in THIRD_PARTY_NOTICES.md.
+
+Nothing in this notice restricts the rights granted to you by those third-party licenses
+for the third-party components themselves. The names "Scratch", the Scratch logo and
+the Scratch Cat are trademarks of the Scratch Foundation; this software is not
+affiliated with or endorsed by the Scratch Foundation or MIT.
+
+[운영자 확인 필요] 권리자 표기("Brixel")를 법인·개인 정식 명칭으로 바꿀 것.
